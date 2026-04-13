@@ -1,2 +1,2 @@
-setuptools<70
+pyTelegramBotAPI
 python-telegram-bot==20.7
