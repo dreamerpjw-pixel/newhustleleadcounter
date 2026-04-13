@@ -65,6 +65,63 @@ def get_person(name):
     return data.get(name, {})
 
 
+# ---------------- 🧠 DASHBOARD LOGIC ----------------
+def classify_workshops(totals: dict):
+    zero = []
+    low = []
+    healthy = []
+
+    for workshop, count in totals.items():
+        if count == 0:
+            zero.append(workshop)
+        elif count <= 2:
+            low.append((workshop, count))
+        else:
+            healthy.append((workshop, count))
+
+    return zero, low, healthy
+
+
+def build_dashboard():
+    totals = get_totals()
+
+    if not totals:
+        return "📊 No data yet — start sending workshop entries!"
+
+    zero, low, healthy = classify_workshops(totals)
+
+    lines = ["📊 WORKSHOP HEALTH DASHBOARD\n"]
+
+    # 🔴 ZERO LEADS
+    lines.append("🔴 NO LEADS (URGENT)")
+    if zero:
+        lines.extend([f"- {w}" for w in zero])
+    else:
+        lines.append("All workshops have at least 1 lead ✨")
+
+    lines.append("")
+
+    # 🟠 LOW LEADS
+    lines.append("🟠 LOW LEADS (1–2)")
+    if low:
+        for w, v in sorted(low, key=lambda x: x[1]):
+            lines.append(f"- {w} ({v})")
+    else:
+        lines.append("None 🎯")
+
+    lines.append("")
+
+    # 🟢 HEALTHY
+    lines.append("🟢 HEALTHY (3+)")
+    if healthy:
+        for w, v in sorted(healthy, key=lambda x: -x[1]):
+            lines.append(f"- {w} ({v})")
+    else:
+        lines.append("None yet 📉")
+
+    return "\n".join(lines)
+
+
 # ---------------- WEBHOOK ENDPOINT ----------------
 @app.post("/webhook")
 async def webhook(req: Request):
@@ -75,12 +132,14 @@ async def webhook(req: Request):
         chat_id = msg["chat"]["id"]
         text = msg.get("text", "")
 
-        # ignore non-text
         if not text:
             return {"ok": True}
 
-        # commands handling
-        if text.startswith("/totals"):
+        # ---------------- COMMANDS ----------------
+        if text.startswith("/dashboard"):
+            response = build_dashboard()
+
+        elif text.startswith("/totals"):
             response = str(get_totals())
 
         elif text.startswith("/person"):
@@ -92,7 +151,7 @@ async def webhook(req: Request):
                 response = str(get_person(name))
 
         else:
-            # normal message = data input
+            # ---------------- DATA INPUT ----------------
             name, parsed = parse_message(text)
             update_store(name, parsed)
             response = f"Stored for {name}: {parsed}"
