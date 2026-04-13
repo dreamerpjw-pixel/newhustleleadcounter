@@ -18,6 +18,9 @@ app = FastAPI()
 # ---------------- DATA STORE ----------------
 data = defaultdict(dict)
 
+def normalize_name(name: str):
+    return name.strip().lower()
+
 # ---------------- PARSER ----------------
 def parse_message(text: str):
     lines = text.splitlines()
@@ -39,11 +42,13 @@ def parse_message(text: str):
         for code, value in pattern.findall(line):
             result[code.upper()] += int(value)
 
-    return name, dict(result)
-
+    # ✅ normalize here
+    return normalize_name(name), dict(result)
 
 # ---------------- STORAGE ----------------
 def update_store(name, parsed):
+    name = normalize_name(name)  
+
     if name not in data:
         data[name] = {}
 
@@ -168,7 +173,9 @@ async def webhook(req: Request):
             if len(parts) < 2:
                 response = "Usage: /person Ryan"
             else:
-                name = " ".join(parts[1:])
+                name = normalize_name(" ".join(parts[1:]))
+                stats = get_person(name)
+                response = build_person_card(name, stats)
                 stats = get_person(name)
                 response = build_person_card(name, stats)
 
