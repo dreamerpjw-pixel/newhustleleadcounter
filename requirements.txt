@@ -1,1 +1,2 @@
+setuptools<70
 python-telegram-bot==20.7
