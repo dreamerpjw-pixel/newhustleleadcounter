@@ -39,7 +39,6 @@ app.add_handler(CommandHandler("totals", totals))
 app.add_handler(CommandHandler("person", person))
 
 app.run_polling()
-    await app.updater.idle()
 
 if __name__ == "__main__":
     asyncio.run(main())
