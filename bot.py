@@ -1,7 +1,7 @@
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, ContextTypes, filters
 
-TOKEN = "YOUR_TOKEN"
+TOKEN = "BOT_TOKEN"
 
 # ---- handlers ----
 
