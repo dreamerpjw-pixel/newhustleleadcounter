@@ -1,7 +1,9 @@
 import os
+import re
+from collections import defaultdict
 
-from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, ContextTypes, filters
+from fastapi import FastAPI, Request
+from telegram import Bot
 
 # ---------------- TOKEN ----------------
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -9,17 +11,20 @@ TOKEN = os.environ.get("BOT_TOKEN")
 if not TOKEN:
     raise ValueError("BOT_TOKEN not set in environment variables")
 
-# ---------------- DATA LAYER ----------------
-from collections import defaultdict
-import re
+bot = Bot(token=TOKEN)
 
+app = FastAPI()
+
+# ---------------- DATA STORE ----------------
 data = defaultdict(dict)
 
+# ---------------- PARSER ----------------
 def parse_message(text: str):
     lines = text.splitlines()
 
     name = "Unknown"
 
+    # detect name (first non-numeric line)
     for line in lines:
         clean = line.strip()
         if clean and not re.search(r"\d", clean):
@@ -37,6 +42,7 @@ def parse_message(text: str):
     return name, dict(result)
 
 
+# ---------------- STORAGE ----------------
 def update_store(name, parsed):
     if name not in data:
         data[name] = {}
@@ -58,36 +64,45 @@ def get_totals():
 def get_person(name):
     return data.get(name, {})
 
-# ---------------- HANDLERS ----------------
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+# ---------------- WEBHOOK ENDPOINT ----------------
+@app.post("/webhook")
+async def webhook(req: Request):
+    update = await req.json()
 
-    name, parsed = parse_message(text)
-    update_store(name, parsed)
+    if "message" in update:
+        msg = update["message"]
+        chat_id = msg["chat"]["id"]
+        text = msg.get("text", "")
 
-    await update.message.reply_text(f"Stored for {name}: {parsed}")
+        # ignore non-text
+        if not text:
+            return {"ok": True}
+
+        # commands handling
+        if text.startswith("/totals"):
+            response = str(get_totals())
+
+        elif text.startswith("/person"):
+            parts = text.split()
+            if len(parts) < 2:
+                response = "Usage: /person Ryan"
+            else:
+                name = " ".join(parts[1:])
+                response = str(get_person(name))
+
+        else:
+            # normal message = data input
+            name, parsed = parse_message(text)
+            update_store(name, parsed)
+            response = f"Stored for {name}: {parsed}"
+
+        await bot.send_message(chat_id=chat_id, text=response)
+
+    return {"ok": True}
 
 
-async def totals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(str(get_totals()))
-
-
-async def person_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Usage: /person Ryan")
-        return
-
-    name = " ".join(context.args)
-    await update.message.reply_text(str(get_person(name)))
-
-# ---------------- APP ----------------
-
-app = ApplicationBuilder().token(TOKEN).build()
-
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-app.add_handler(CommandHandler("totals", totals_cmd))
-app.add_handler(CommandHandler("person", person_cmd))
-
-if __name__ == "__main__":
-    app.run_polling()
+# ---------------- HEALTH CHECK ----------------
+@app.get("/")
+def home():
+    return {"status": "bot alive"}
