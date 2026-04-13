@@ -38,12 +38,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 app.add_handler(CommandHandler("totals", totals))
 app.add_handler(CommandHandler("person", person))
 
-import asyncio
-
-async def main():
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
+app.run_polling()
     await app.updater.idle()
 
 if __name__ == "__main__":
