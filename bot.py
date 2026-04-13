@@ -1,5 +1,6 @@
 import os
 import re
+from datetime import date
 from collections import defaultdict
 
 from fastapi import FastAPI, Request
@@ -12,14 +13,39 @@ if not TOKEN:
     raise ValueError("BOT_TOKEN not set in environment variables")
 
 bot = Bot(token=TOKEN)
-
 app = FastAPI()
 
-# ---------------- DATA STORE ----------------
-data = defaultdict(dict)
+# ---------------- CONFIG ----------------
+ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))  # optional safety
 
+# ---------------- STATE ----------------
+data = defaultdict(dict)
+current_day = date.today()
+
+# ---------------- HELPERS ----------------
 def normalize_name(name: str):
     return name.strip().lower()
+
+
+def reset_data():
+    global data
+    data.clear()
+
+
+def check_reset():
+    global current_day
+
+    today = date.today()
+
+    if today != current_day:
+        reset_data()
+        current_day = today
+
+
+def reset_data_manual():
+    global data
+    data.clear()
+
 
 # ---------------- PARSER ----------------
 def parse_message(text: str):
@@ -27,7 +53,6 @@ def parse_message(text: str):
 
     name = "Unknown"
 
-    # detect name (first non-numeric line)
     for line in lines:
         clean = line.strip()
         if clean and not re.search(r"\d", clean):
@@ -42,12 +67,12 @@ def parse_message(text: str):
         for code, value in pattern.findall(line):
             result[code.upper()] += int(value)
 
-    # ✅ normalize here
     return normalize_name(name), dict(result)
+
 
 # ---------------- STORAGE ----------------
 def update_store(name, parsed):
-    name = normalize_name(name)  
+    name = normalize_name(name)
 
     if name not in data:
         data[name] = {}
@@ -67,14 +92,12 @@ def get_totals():
 
 
 def get_person(name):
-    return data.get(name, {})
+    return data.get(normalize_name(name), {})
 
 
-# ---------------- 🧠 DASHBOARD LOGIC ----------------
+# ---------------- DASHBOARD ----------------
 def classify_workshops(totals: dict):
-    zero = []
-    low = []
-    healthy = []
+    zero, low, healthy = [], [], []
 
     for workshop, count in totals.items():
         if count == 0:
@@ -91,29 +114,24 @@ def build_dashboard():
     totals = get_totals()
 
     if not totals:
-        return "📊 No data yet — start sending workshop entries!"
+        return "📊 No data yet for today."
 
     zero, low, healthy = classify_workshops(totals)
 
-    lines = ["📊 WORKSHOP HEALTH DASHBOARD\n"]
+    lines = ["📊 WORKSHOP DASHBOARD (TODAY)\n"]
 
-    # 🔴 ZERO LEADS
-    lines.append("🔴 NO LEADS (URGENT)")
-    if zero:
-        lines.extend([f"- {w}" for w in zero])
-    else:
-        lines.append("All workshops have at least 1 lead ✨")
-
+    # 🔴 ZERO
+    lines.append("🔴 NO LEADS")
+    lines.extend([f"- {w}" for w in zero] or ["All workshops active ✨"])
     lines.append("")
 
-    # 🟠 LOW LEADS
+    # 🟠 LOW
     lines.append("🟠 LOW LEADS (1–2)")
     if low:
         for w, v in sorted(low, key=lambda x: x[1]):
             lines.append(f"- {w} ({v})")
     else:
         lines.append("None 🎯")
-
     lines.append("")
 
     # 🟢 HEALTHY
@@ -127,35 +145,35 @@ def build_dashboard():
     return "\n".join(lines)
 
 
-# ---------------- 👤 PERSON CARD ----------------
+# ---------------- PERSON CARD ----------------
 def build_person_card(name: str, stats: dict):
     if not stats:
-        return f"👤 {name}\n\nNo data found yet."
+        return f"👤 {name}\n\nNo data found for today."
 
     total = sum(stats.values())
 
     lines = [f"👤 {name}\n"]
 
-    # sort highest first
-    sorted_stats = sorted(stats.items(), key=lambda x: -x[1])
-
-    for k, v in sorted_stats:
+    for k, v in sorted(stats.items(), key=lambda x: -x[1]):
         lines.append(f"{k}: {v}")
 
-    lines.append(f"\n📊 Total: {total} leads")
+    lines.append(f"\n📊 Total: {total} leads today")
 
     return "\n".join(lines)
 
 
-# ---------------- WEBHOOK ENDPOINT ----------------
+# ---------------- WEBHOOK ----------------
 @app.post("/webhook")
 async def webhook(req: Request):
+    check_reset()
+
     update = await req.json()
 
     if "message" in update:
         msg = update["message"]
         chat_id = msg["chat"]["id"]
         text = msg.get("text", "")
+        user_id = msg["from"]["id"]
 
         if not text:
             return {"ok": True}
@@ -173,11 +191,17 @@ async def webhook(req: Request):
             if len(parts) < 2:
                 response = "Usage: /person Ryan"
             else:
-                name = normalize_name(" ".join(parts[1:]))
+                name = " ".join(parts[1:])
                 stats = get_person(name)
                 response = build_person_card(name, stats)
-                stats = get_person(name)
-                response = build_person_card(name, stats)
+
+        # ---------------- MANUAL RESET ----------------
+        elif text.startswith("/reset"):
+            if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
+                response = "⛔ You are not allowed to reset data."
+            else:
+                reset_data_manual()
+                response = "🧹 Data has been reset manually."
 
         else:
             # ---------------- DATA INPUT ----------------
