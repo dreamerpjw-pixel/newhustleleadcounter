@@ -122,6 +122,26 @@ def build_dashboard():
     return "\n".join(lines)
 
 
+# ---------------- 👤 PERSON CARD ----------------
+def build_person_card(name: str, stats: dict):
+    if not stats:
+        return f"👤 {name}\n\nNo data found yet."
+
+    total = sum(stats.values())
+
+    lines = [f"👤 {name}\n"]
+
+    # sort highest first
+    sorted_stats = sorted(stats.items(), key=lambda x: -x[1])
+
+    for k, v in sorted_stats:
+        lines.append(f"{k}: {v}")
+
+    lines.append(f"\n📊 Total: {total} leads")
+
+    return "\n".join(lines)
+
+
 # ---------------- WEBHOOK ENDPOINT ----------------
 @app.post("/webhook")
 async def webhook(req: Request):
@@ -144,11 +164,13 @@ async def webhook(req: Request):
 
         elif text.startswith("/person"):
             parts = text.split()
+
             if len(parts) < 2:
                 response = "Usage: /person Ryan"
             else:
                 name = " ".join(parts[1:])
-                response = str(get_person(name))
+                stats = get_person(name)
+                response = build_person_card(name, stats)
 
         else:
             # ---------------- DATA INPUT ----------------
