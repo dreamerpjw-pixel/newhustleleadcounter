@@ -165,18 +165,56 @@ def build_person_card(name: str, stats: dict):
 # ---------------- WEBHOOK ----------------
 @app.post("/webhook")
 async def webhook(req: Request):
-    check_reset()
+    try:
+        check_reset()
 
-    update = await req.json()
+        update = await req.json()
+        print("Incoming update:", update)  # 👈 ADD HERE
 
-    if "message" in update:
-        msg = update["message"]
-        chat_id = msg["chat"]["id"]
-        text = msg.get("text", "")
-        user_id = msg["from"]["id"]
+        if "message" in update:
+            msg = update["message"]
+            chat_id = msg["chat"]["id"]
+            text = msg.get("text", "")
+            user_id = msg["from"]["id"]
 
-        if not text:
-            return {"ok": True}
+            if not text:
+                return {"ok": True}
+
+            # ---------------- COMMANDS ----------------
+            if text.startswith("/dashboard"):
+                response = build_dashboard()
+
+            elif text.startswith("/totals"):
+                response = str(get_totals())
+
+            elif text.startswith("/person"):
+                parts = text.split()
+
+                if len(parts) < 2:
+                    response = "Usage: /person Ryan"
+                else:
+                    name = " ".join(parts[1:])
+                    stats = get_person(name)
+                    response = build_person_card(name, stats)
+
+            elif text.startswith("/reset"):
+                if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
+                    response = "⛔ You are not allowed to reset data."
+                else:
+                    reset_data_manual()
+                    response = "🧹 Data has been reset manually."
+
+            else:
+                name, parsed = parse_message(text)
+                update_store(name, parsed)
+                response = f"Stored for {name}: {parsed}"
+
+            await bot.send_message(chat_id=chat_id, text=response)
+
+    except Exception as e:
+        print("ERROR:", str(e))  # 👈 ADD HERE
+
+    return {"ok": True}
 
         # ---------------- COMMANDS ----------------
         if text.startswith("/dashboard"):
