@@ -129,7 +129,7 @@ async def leads_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 # RULE ENGINE ⚙️
 # =========================
-IGNORE = {"PCA"}
+IGNORE = {"PCA","NARRATIVE WRITING","RICE SMC"}
 MERGE = {"CAM": "DSLR", "PPECAM": "DSLR"}
 
 def normalize(w):
