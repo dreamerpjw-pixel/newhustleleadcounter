@@ -170,10 +170,24 @@ def parse_csv(file_bytes):
     content = file_bytes.decode("utf-8", errors="ignore")
     reader = csv.reader(StringIO(content))
 
+    # Create a set of valid codes for quick lookup
+    valid_codes = set(WORKSHOP_MAP.values())
+
     for row in reader:
         if len(row) < 5: continue
-        raw_name = normalize(row[0]).split("-")[0].split("(")[0].strip()
-        workshop = apply_rules(WORKSHOP_MAP.get(raw_name, raw_name))
+        
+        # 1. Clean the input
+        raw_val = normalize(row[0]).split("-")[0].split("(")[0].strip()
+        
+        # 2. Smart Identification
+        # Check if it's already a code (e.g., "PPE") or needs mapping (e.g., "PHOTOGRAPHY")
+        if raw_val in valid_codes:
+            workshop = raw_val
+        else:
+            workshop = WORKSHOP_MAP.get(raw_val, raw_val)
+        
+        # 3. Apply final rules (Ignore/Merge)
+        workshop = apply_rules(workshop)
         
         if not workshop: continue
         
