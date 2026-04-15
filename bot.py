@@ -158,14 +158,18 @@ def clean_csv_workshop(raw):
 
 def parse_csv(file_bytes):
     data = defaultdict(int)
-    content = file_bytes.decode("utf-8")
+    content = file_bytes.decode("utf-8", errors="ignore")
 
     reader = csv.reader(StringIO(content))
 
     for row in reader:
-        if len(row) < 2:
+        # need at least 5 columns
+        if len(row) < 5:
             continue
 
+        # =========================
+        # 1. WORKSHOP NAME (COL 1)
+        # =========================
         raw_name = normalize(row[0])
         clean_name = clean_csv_workshop(raw_name)
 
@@ -175,8 +179,11 @@ def parse_csv(file_bytes):
         if not workshop:
             continue
 
+        # =========================
+        # 2. LEAD COUNT (COL 5)
+        # =========================
         try:
-            count = int(row[1].replace(",", "").strip())
+            count = int(row[4].replace(",", "").strip())
         except:
             continue
 
