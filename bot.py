@@ -99,6 +99,31 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
 
+async def leakage_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    state = user_state.get(user_id)
+
+    if not state or not state.get("baseline"):
+        await update.message.reply_text("❌ No baseline data found. Please upload a CSV first.")
+        return
+
+    # If they've already pasted text, we can compare. 
+    # If not, we show leakage against an empty 'reported' set (showing all as leaked).
+    comparison = compare(state["baseline"], state.get("reported", {}))
+    report = build_leakage_only_report(comparison)
+    await update.message.reply_text(report, parse_mode="Markdown")
+
+async def leads_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    state = user_state.get(user_id)
+
+    if not state or not state.get("reported"):
+        await update.message.reply_text("❌ No reported leads found. Please paste your leads text first.")
+        return
+
+    report = build_lead_count_alert_report(state["reported"])
+    await update.message.reply_text(report, parse_mode="Markdown")
+
 # =========================
 # RULE ENGINE ⚙️
 # =========================
@@ -187,6 +212,47 @@ def build_report(comparison):
     return "\n".join(lines)
 
 # =========================
+# NEW REPORT BUILDERS 📊
+# =========================
+
+def build_leakage_only_report(comparison):
+    """Only reports cases where Baseline > Reported"""
+    lines = ["🔻 *LEAKAGE ONLY REPORT*\n"]
+    found = False
+    for k, base, rep, status in comparison:
+        diff = base - rep
+        if diff > 0:
+            lines.append(f"*{k}*\nMissing: {diff} leads (Base: {base} | Rep: {rep})\n")
+            found = True
+    
+    return "\n".join(lines) if found else "✅ No leakages found! All leads accounted for."
+
+def build_lead_count_alert_report(reported_data):
+    """Highlights zero and low (1-2) reported leads"""
+    lines = ["⚠️ *LEAD COUNT ALERTS*\n"]
+    
+    zero_leads = []
+    low_leads = []
+
+    # Check against our known WORKSHOP_MAP to find zeros
+    all_workshops = set(WORKSHOP_MAP.values())
+    
+    for w in all_workshops:
+        count = reported_data.get(w, 0)
+        if count == 0:
+            zero_leads.append(w)
+        elif 1 <= count <= 2:
+            low_leads.append(f"{w} ({count})")
+
+    lines.append("🔴 *ZERO LEADS REPORTED:*")
+    lines.extend([f"- {w}" for w in sorted(zero_leads)] or ["None"])
+    
+    lines.append("\n🟠 *LOW LEADS (1-2):*")
+    lines.extend([f"- {w}" for w in sorted(low_leads)] or ["None"])
+
+    return "\n".join(lines)
+
+# =========================
 # HANDLER ⚙️
 # =========================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -206,19 +272,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text("✅ CSV parsed. Now paste the reported leads text.")
         else:
             await msg.reply_text("📎 Please upload the baseline CSV file.")
-    
     elif state["step"] == 2:
         if msg.text:
             reported = parse_text(msg.text)
             if not reported:
-                await msg.reply_text("❌ No valid lead data found in your text. Try again.")
+                await msg.reply_text("❌ No valid lead data found. Try again.")
                 return
             
+            state["reported"] = reported
             comparison = compare(state["baseline"], reported)
+            
             await msg.reply_text(build_report(comparison), parse_mode="Markdown")
-            reset_state(user_id)
-        else:
-            await msg.reply_text("💬 Please send the reported leads as text.")
+            await msg.reply_text(build_leakage_only_report(comparison), parse_mode="Markdown")
+            await msg.reply_text(build_lead_count_alert_report(reported), parse_mode="Markdown")
+
+            # REMOVED reset_state(user_id) here so commands keep working!
+            await msg.reply_text("✅ Analysis complete. You can use /leakage or /leadsreport to see these again, or /reset to start fresh.")
+
 
 # =========================
 # MAIN 🚀
@@ -227,12 +297,18 @@ if __name__ == "__main__":
     print("🤖 Bot is starting via Polling...")
     app = ApplicationBuilder().token(TOKEN).build()
 
+    # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("sample", sample))
     app.add_handler(CommandHandler("status", status))
+    
+    # New Report Commands
+    app.add_handler(CommandHandler("leakage", leakage_report_cmd))
+    app.add_handler(CommandHandler("leadsreport", leads_report_cmd))
+
+    # General Messages (CSV and Text input)
     app.add_handler(MessageHandler((filters.TEXT | filters.Document.ALL) & ~filters.COMMAND, handle_message))
 
-    # This replaces all the webhook/aiohttp code
     app.run_polling()
