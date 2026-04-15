@@ -23,6 +23,9 @@ PORT = int(os.environ.get("PORT", 10000))
 if not TOKEN:
     raise ValueError("BOT_TOKEN is not set")
 
+if not WEBHOOK_URL:
+    raise ValueError("WEBHOOK_URL is not set")
+
 # =========================
 # STATE STORAGE 🧠
 # =========================
@@ -254,7 +257,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = user_state[user_id]
     msg = update.message
 
-    # STEP 1: CSV
+    # 🧯 SAFETY CHECK (important for webhooks)
+    if msg is None:
+        return
+
+    # =========================
+    # STEP 1: CSV 📎
+    # =========================
     if state["step"] == 1:
         if msg.document:
             file = await msg.document.get_file()
@@ -268,26 +277,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text("📎 Please upload CSV first.")
         return
 
-    # STEP 2: TEXT
+    # =========================
+    # STEP 2: TEXT 💬
+    # =========================
     if state["step"] == 2:
-        if msg.text:
-            reported = parse_text(msg.text)
+        if not msg.text:
+            await msg.reply_text("💬 Please send text input (not file or sticker).")
+            return
 
-            if not reported:
-                await msg.reply_text("❌ No valid leads found.")
-                return
+        reported = parse_text(msg.text)
 
-            state["reported"] = reported
-            state["step"] = 3
+        if not reported:
+            await msg.reply_text("❌ No valid leads found.")
+            return
 
-            comparison = compare(state["baseline"], reported)
-            report = build_report(comparison)
+        state["reported"] = reported
+        state["step"] = 3
 
-            await msg.reply_text(report, parse_mode="Markdown")
+        comparison = compare(state["baseline"], reported)
+        report = build_report(comparison)
 
-            reset_state(user_id)
-        else:
-            await msg.reply_text("💬 Please send text input.")
+        await msg.reply_text(report, parse_mode="Markdown")
+
+        reset_state(user_id)
         return
 
 # =========================
