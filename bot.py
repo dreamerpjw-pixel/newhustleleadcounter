@@ -1,258 +1,343 @@
 import os
+import csv
 import re
-from datetime import date
+from io import StringIO
 from collections import defaultdict
 
-from fastapi import FastAPI, Request
-from telegram import Bot
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    MessageHandler,
+    ContextTypes,
+    filters,
+    CommandHandler,
+)
 
-# ---------------- TOKEN ----------------
-TOKEN = os.environ.get("BOT_TOKEN")
+# =========================
+# CONFIG 🔧
+# =========================
+TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+PORT = int(os.environ.get("PORT", 10000))
 
 if not TOKEN:
-    raise ValueError("BOT_TOKEN not set in environment variables")
+    raise ValueError("BOT_TOKEN is not set")
 
-bot = Bot(token=TOKEN)
-app = FastAPI()
+# =========================
+# STATE STORAGE 🧠
+# =========================
+user_state = {}
 
-# ---------------- CONFIG ----------------
-ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", "0"))  # optional safety
+def reset_state(user_id):
+    user_state[user_id] = {
+        "step": 1,
+        "baseline": {},
+        "reported": {},
+    }
 
-# ---------------- STATE ----------------
-data = defaultdict(dict)
-current_day = date.today()
+# =========================
+# COMMANDS 🎮
+# =========================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    reset_state(user_id)
 
-# ---------------- HELPERS ----------------
-def normalize_name(name: str):
-    return name.strip().lower()
+    await update.message.reply_text(
+        "👋 *Welcome to the Leakage Bot*\n\n"
+        "Step 1️⃣: Upload your baseline CSV 📎\n"
+        "Step 2️⃣: Paste reported leads text 💬\n\n"
+        "Use /sample to see format examples.\n"
+        "Use /reset anytime to restart.",
+        parse_mode="Markdown",
+    )
 
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🆘 *How to use*\n\n"
+        "1. Upload CSV with workshop + count\n"
+        "2. Paste reported text\n\n"
+        "Commands:\n"
+        "/start - Restart flow\n"
+        "/reset - Clear session\n"
+        "/sample - Show examples\n"
+        "/status - Check progress",
+        parse_mode="Markdown",
+    )
 
-def reset_data():
-    global data
-    data.clear()
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    reset_state(user_id)
+    await update.message.reply_text("🔄 Reset complete. Upload a new CSV to start.")
 
+async def sample(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📄 *Sample Formats*\n\n"
+        "*CSV:*\n"
+        "Photography - 6 Apr, 10\n"
+        "Videography - 23 Mar, 5\n\n"
+        "*Text:*\n"
+        "PPE - 8\n"
+        "VVE - 3",
+        parse_mode="Markdown",
+    )
 
-def check_reset():
-    global current_day
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    state = user_state.get(user_id, {"step": 1})
 
-    today = date.today()
+    step = state["step"]
+    baseline = "✅" if state.get("baseline") else "❌"
+    reported = "✅" if state.get("reported") else "❌"
 
-    if today != current_day:
-        reset_data()
-        current_day = today
+    if step == 1:
+        step_text = "Waiting for CSV upload 📎"
+    elif step == 2:
+        step_text = "Waiting for text input 💬"
+    else:
+        step_text = "Processing / Done"
 
+    await update.message.reply_text(
+        f"📊 *Current Status*\n\n"
+        f"Step: {step_text}\n"
+        f"Baseline: {baseline}\n"
+        f"Reported: {reported}",
+        parse_mode="Markdown",
+    )
 
-def reset_data_manual():
-    global data
-    data.clear()
+# =========================
+# RULE ENGINE ⚙️
+# =========================
+IGNORE = {"PCA"}
 
+MERGE = {
+    "CAM": "DSLR",
+    "PPECAM": "DSLR",
+}
 
-# ---------------- PARSER ----------------
-def parse_message(text: str):
-    lines = text.splitlines()
+def normalize(w):
+    return w.strip().upper()
 
-    name = "Unknown"
+def apply_rules(w):
+    if w in IGNORE:
+        return None
+    if w in MERGE:
+        return MERGE[w]
+    return w
 
-    for line in lines:
-        clean = line.strip()
-        if clean and not re.search(r"\d", clean):
-            name = clean.replace("*", "").strip()
-            break
+WORKSHOP_MAP = {
+    "PHOTOGRAPHY": "PPE",
+    "VIDEOGRAPHY": "VVE",
+    "ACRYLIC PAINTING": "CCA",
+    "DIGITAL ART": "DAR",
+    "WATERCOLOUR": "WAR",
+    "DSLR": "DSLR",
+    "CANVA SOCIAL MEDIA": "CSM",
+    "CANVA PRO": "GDC",
+    "DJ SOUND MIXING": "PSM",
+    "GENERAL AI": "PHG",
+    "MUSIC PRODUCTION": "DMP",
+    "GUITAR": "GMP",
+    "PUBLIC SPEAKING": "PPS",
+    "AI VIDEO": "AVC",
+    "MONEY MANAGEMENT": "MMW",
+    "LEICA": "LVS",
+    "NEGOTIATION": "BNG",
+    "FLORAL ARRANGEMENT": "FPS",
+    "PERFUME": "SPD",
+    "VIBE CODING": "AIC",
+}
 
-    pattern = re.compile(r"([A-Za-z]+)\s*[- ]\s*(\d+)")
+# =========================
+# CSV PARSER 📎
+# =========================
+def clean_csv_workshop(raw):
+    return raw.split("-")[0].split("(")[0].strip()
 
-    result = defaultdict(int)
+def parse_csv(file_bytes):
+    data = defaultdict(int)
+    content = file_bytes.decode("utf-8")
 
-    for line in lines:
-        for code, value in pattern.findall(line):
-            result[code.upper()] += int(value)
+    reader = csv.reader(StringIO(content))
 
-    return normalize_name(name), dict(result)
+    for row in reader:
+        if len(row) < 2:
+            continue
 
+        raw_name = normalize(row[0])
+        clean_name = clean_csv_workshop(raw_name)
 
-# ---------------- STORAGE ----------------
-def update_store(name, parsed):
-    name = normalize_name(name)
+        workshop = WORKSHOP_MAP.get(clean_name, clean_name)
+        workshop = apply_rules(workshop)
 
-    if name not in data:
-        data[name] = {}
+        if not workshop:
+            continue
 
-    for k, v in parsed.items():
-        data[name][k] = data[name].get(k, 0) + v
+        try:
+            count = int(row[1].replace(",", "").strip())
+        except:
+            continue
 
+        data[workshop] += count
 
-def get_totals():
-    totals = defaultdict(int)
+    return dict(data)
 
-    for person in data.values():
-        for k, v in person.items():
-            totals[k] += v
+# =========================
+# TEXT PARSER 💬
+# =========================
+def parse_text(text):
+    data = defaultdict(int)
 
-    return dict(totals)
+    for line in text.split("\n"):
+        line = line.strip()
 
+        if not line or line.startswith("["):
+            continue
 
-def get_person(name):
-    return data.get(normalize_name(name), {})
+        match = re.match(r"(.+?)\s*[-:]?\s*([\d,]+)", line)
+        if not match:
+            continue
 
+        w = apply_rules(normalize(match.group(1)))
+        if not w:
+            continue
 
-# ---------------- DASHBOARD ----------------
-def classify_workshops(totals: dict):
-    zero, low, healthy = [], [], []
+        count = int(match.group(2).replace(",", ""))
+        data[w] += count
 
-    for workshop, count in totals.items():
-        if count == 0:
-            zero.append(workshop)
-        elif count <= 2:
-            low.append((workshop, count))
+    return dict(data)
+
+# =========================
+# LEAKAGE ENGINE 🔍
+# =========================
+def compare(baseline, reported):
+    all_keys = set(baseline) | set(reported)
+    result = []
+
+    for k in sorted(all_keys):
+        base = baseline.get(k, 0)
+        rep = reported.get(k, 0)
+        diff = base - rep
+
+        if diff > 0:
+            status = f"🔻 Leakage: {diff}"
+        elif diff < 0:
+            status = f"⚠️ Over-reporting: {abs(diff)}"
         else:
-            healthy.append((workshop, count))
+            status = "✅ Matched"
 
-    return zero, low, healthy
+        result.append((k, base, rep, status))
 
+    return result
 
-def build_dashboard():
-    totals = get_totals()
+# =========================
+# REPORT BUILDER 📊
+# =========================
+def build_report(comparison):
+    lines = ["📊 *LEAKAGE REPORT*\n"]
 
-    if not totals:
-        return "📊 No data yet for today."
-
-    zero, low, healthy = classify_workshops(totals)
-
-    lines = ["📊 WORKSHOP DASHBOARD (TODAY)\n"]
-
-    # 🔴 ZERO
-    lines.append("🔴 NO LEADS")
-    lines.extend([f"- {w}" for w in zero] or ["All workshops active ✨"])
-    lines.append("")
-
-    # 🟠 LOW
-    lines.append("🟠 LOW LEADS (1–2)")
-    if low:
-        for w, v in sorted(low, key=lambda x: x[1]):
-            lines.append(f"- {w} ({v})")
-    else:
-        lines.append("None 🎯")
-    lines.append("")
-
-    # 🟢 HEALTHY
-    lines.append("🟢 HEALTHY (3+)")
-    if healthy:
-        for w, v in sorted(healthy, key=lambda x: -x[1]):
-            lines.append(f"- {w} ({v})")
-    else:
-        lines.append("None yet 📉")
+    for k, base, rep, status in comparison:
+        lines.append(f"{k}")
+        lines.append(f"Baseline: {base} | Reported: {rep} | {status}")
+        lines.append("")
 
     return "\n".join(lines)
 
+# =========================
+# MAIN HANDLER ⚙️
+# =========================
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
 
-# ---------------- PERSON CARD ----------------
-def build_person_card(name: str, stats: dict):
-    if not stats:
-        return f"👤 {name}\n\nNo data found for today."
+    if user_id not in user_state:
+        reset_state(user_id)
 
-    total = sum(stats.values())
+    state = user_state[user_id]
+    msg = update.message
 
-    lines = [f"👤 {name}\n"]
+    # STEP 1: CSV
+    if state["step"] == 1:
+        if msg.document:
+            file = await msg.document.get_file()
+            file_bytes = await file.download_as_bytearray()
 
-    for k, v in sorted(stats.items(), key=lambda x: -x[1]):
-        lines.append(f"{k}: {v}")
+            state["baseline"] = parse_csv(file_bytes)
+            state["step"] = 2
 
-    lines.append(f"\n📊 Total: {total} leads today")
-
-    return "\n".join(lines)
-
-
-# ---------------- WEBHOOK ----------------
-@app.post("/webhook")
-async def webhook(req: Request):
-    try:
-        check_reset()
-
-        update = await req.json()
-        print("Incoming update:", update)  # 👈 ADD HERE
-
-        if "message" in update:
-            msg = update["message"]
-            chat_id = msg["chat"]["id"]
-            text = msg.get("text", "")
-            user_id = msg["from"]["id"]
-
-            if not text:
-                return {"ok": True}
-
-            # ---------------- COMMANDS ----------------
-            if text.startswith("/dashboard"):
-                response = build_dashboard()
-
-            elif text.startswith("/totals"):
-                response = str(get_totals())
-
-            elif text.startswith("/person"):
-                parts = text.split()
-
-                if len(parts) < 2:
-                    response = "Usage: /person Ryan"
-                else:
-                    name = " ".join(parts[1:])
-                    stats = get_person(name)
-                    response = build_person_card(name, stats)
-
-            elif text.startswith("/reset"):
-                if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
-                    response = "⛔ You are not allowed to reset data."
-                else:
-                    reset_data_manual()
-                    response = "🧹 Data has been reset manually."
-
-            else:
-                name, parsed = parse_message(text)
-                update_store(name, parsed)
-                response = f"Stored for {name}: {parsed}"
-
-            await bot.send_message(chat_id=chat_id, text=response)
-
-    except Exception as e:
-        print("ERROR:", str(e))  # 👈 ADD HERE
-
-    return {"ok": True}
-
-        # ---------------- COMMANDS ----------------
-        if text.startswith("/dashboard"):
-            response = build_dashboard()
-
-        elif text.startswith("/totals"):
-            response = str(get_totals())
-
-        elif text.startswith("/person"):
-            parts = text.split()
-
-            if len(parts) < 2:
-                response = "Usage: /person Ryan"
-            else:
-                name = " ".join(parts[1:])
-                stats = get_person(name)
-                response = build_person_card(name, stats)
-
-        # ---------------- MANUAL RESET ----------------
-        elif text.startswith("/reset"):
-            if ADMIN_USER_ID and user_id != ADMIN_USER_ID:
-                response = "⛔ You are not allowed to reset data."
-            else:
-                reset_data_manual()
-                response = "🧹 Data has been reset manually."
-
+            await msg.reply_text("✅ CSV uploaded. Now send reported text.")
         else:
-            # ---------------- DATA INPUT ----------------
-            name, parsed = parse_message(text)
-            update_store(name, parsed)
-            response = f"Stored for {name}: {parsed}"
+            await msg.reply_text("📎 Please upload CSV first.")
+        return
 
-        await bot.send_message(chat_id=chat_id, text=response)
+    # STEP 2: TEXT
+    if state["step"] == 2:
+        if msg.text:
+            reported = parse_text(msg.text)
 
-    return {"ok": True}
+            if not reported:
+                await msg.reply_text("❌ No valid leads found.")
+                return
 
+            state["reported"] = reported
+            state["step"] = 3
 
-# ---------------- HEALTH CHECK ----------------
-@app.get("/")
-def home():
-    return {"status": "bot alive"}
+            comparison = compare(state["baseline"], reported)
+            report = build_report(comparison)
+
+            await msg.reply_text(report, parse_mode="Markdown")
+
+            reset_state(user_id)
+        else:
+            await msg.reply_text("💬 Please send text input.")
+        return
+
+# =========================
+# BOOT 🚀
+# =========================
+app = ApplicationBuilder().token(TOKEN).build()
+
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("help", help_cmd))
+app.add_handler(CommandHandler("reset", reset))
+app.add_handler(CommandHandler("sample", sample))
+app.add_handler(CommandHandler("status", status))
+
+app.add_handler(
+    MessageHandler(
+        (filters.TEXT | filters.Document.ALL) & ~filters.COMMAND,
+        handle_message,
+    )
+)
+
+# =========================
+# WEBHOOK 🌐
+# =========================
+from aiohttp import web
+
+WEBHOOK_PATH = "/webhook"
+
+async def handle(request):
+    data = await request.json()
+    update = Update.de_json(data, app.bot)
+    await app.process_update(update)
+    return web.Response(text="ok")
+
+async def start_bot():
+    await app.initialize()
+    await app.start()
+    await app.bot.set_webhook(WEBHOOK_URL)
+
+async def stop_bot():
+    await app.bot.delete_webhook()
+    await app.stop()
+    await app.shutdown()
+
+def main():
+    web_app = web.Application()
+    web_app.router.add_post(WEBHOOK_PATH, handle)
+    web_app.on_startup.append(lambda app_web: start_bot())
+    web_app.on_cleanup.append(lambda app_web: stop_bot())
+
+    web.run_app(web_app, host="0.0.0.0", port=PORT)
+
+if __name__ == "__main__":
+    main()
