@@ -1,12 +1,8 @@
 import os
 import csv
 import re
-import json
-import threading
 from io import StringIO
 from collections import defaultdict
-from datetime import date
-from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from telegram import Update
 from telegram.ext import (
@@ -90,34 +86,33 @@ async def sample(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    state = user_state.get(user_id, {"step": 1})
 
-    step = state["step"]
-    baseline = "✅" if state.get("baseline") else "❌"
-    reported = "✅" if state.get("reported") else "❌"
-
-    step_text = "Waiting for CSV upload 📎" if step == 1 else "Waiting for text input 💬"
+    state = user_state.get(user_id) or {"step": 1, "baseline": {}, "reported": {}}
+    baseline = "✅ Loaded" if state.get("baseline") else "❌ Not set"
+    reported = "✅ Loaded" if state.get("reported") else "❌ Not set"
 
     await update.message.reply_text(
-        f"📊 *Current Status*\n\n"
-        f"Step: {step_text}\n"
-        f"Baseline: {baseline}\n"
-        f"Reported: {reported}",
-        parse_mode="Markdown",
-    )
+    f"📊 *Current Status*\n\n"
+    f"Baseline: {baseline}\n"
+    f"Reported: {reported}",
+    parse_mode="Markdown",
+)
 
 async def leakage_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     state = user_state.get(user_id)
 
     if not state or not state.get("baseline"):
-        await update.message.reply_text("❌ No baseline data found. Please upload a CSV first.")
+        await update.message.reply_text("❌ Baseline required for leakage report. Upload a CSV first.")
         return
 
-    # If they've already pasted text, we can compare. 
-    # If not, we show leakage against an empty 'reported' set (showing all as leaked).
-    comparison = compare(state["baseline"], state.get("reported", {}))
+    if not state.get("reported"):
+        await update.message.reply_text("❌ No reported data found. Send leads text first.")
+        return
+
+    comparison = compare(state["baseline"], state["reported"])
     report = build_leakage_only_report(comparison)
+
     await update.message.reply_text(report, parse_mode="Markdown")
 
 async def leads_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -175,31 +170,54 @@ def parse_csv(file_bytes):
     content = file_bytes.decode("utf-8", errors="ignore")
     reader = csv.reader(StringIO(content))
 
-    # Create a set of valid codes for quick lookup
+    rows = list(reader)
+    if not rows:
+        return {}
+
+    # Normalize headers
+    headers = [h.strip().lower() for h in rows[0]]
+
+    campaign_idx = None
+    leads_idx = None
+
+    # 🎯 Try to detect columns by name
+    for i, h in enumerate(headers):
+        if "campaign" in h:
+            campaign_idx = i
+        elif "lead" in h:
+            leads_idx = i
+
+    # 🚨 If headers not found → fallback to positional logic
+    start_row = 1
+    if campaign_idx is None or leads_idx is None:
+        campaign_idx = 0
+        leads_idx = -1
+        start_row = 0  # no header
+
     valid_codes = set(WORKSHOP_MAP.values())
 
-    for row in reader:
-        if len(row) < 5: continue
-        
-        # 1. Clean the input
-        raw_val = normalize(row[0]).split("-")[0].split("(")[0].strip()
-        
-        # 2. Smart Identification
-        # Check if it's already a code (e.g., "PPE") or needs mapping (e.g., "PHOTOGRAPHY")
+    for row in rows[start_row:]:
+        if len(row) <= max(campaign_idx, leads_idx):
+            continue
+
+        raw_val = normalize(row[campaign_idx]).split("-")[0].split("(")[0].strip()
+
+        # Map workshop
         if raw_val in valid_codes:
             workshop = raw_val
         else:
             workshop = WORKSHOP_MAP.get(raw_val, raw_val)
-        
-        # 3. Apply final rules (Ignore/Merge)
+
         workshop = apply_rules(workshop)
-        
-        if not workshop: continue
-        
+        if not workshop:
+            continue
+
         try:
-            count = int(row[4].replace(",", "").strip())
+            count = int(row[leads_idx].replace(",", "").strip())
             data[workshop] += count
-        except: continue
+        except:
+            continue
+
     return dict(data)
 
 def parse_text(text):
@@ -273,44 +291,59 @@ def build_lead_count_alert_report(reported_data):
 
     return "\n".join(lines)
 
-# =========================
-# HANDLER ⚙️
-# =========================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id not in user_state: reset_state(user_id)
-    
+    if user_id not in user_state:
+        reset_state(user_id)
+
     state = user_state[user_id]
     msg = update.message
-    if not msg: return
+    if not msg:
+        return
 
-    if state["step"] == 1:
-        if msg.document and msg.document.file_name.endswith('.csv'):
-            file = await msg.document.get_file()
-            file_bytes = await file.download_as_bytearray()
-            state["baseline"] = parse_csv(file_bytes)
-            state["step"] = 2
-            await msg.reply_text("✅ CSV parsed. Now paste the reported leads text.")
-        else:
-            await msg.reply_text("📎 Please upload the baseline CSV file.")
-    elif state["step"] == 2:
-        if msg.text:
-            reported = parse_text(msg.text)
-            if not reported:
-                await msg.reply_text("❌ No valid lead data found. Try again.")
-                return
-            
-            state["reported"] = reported
+    # 📎 CSV = baseline
+    if msg.document and msg.document.file_name.endswith('.csv'):
+        file = await msg.document.get_file()
+        file_bytes = await file.download_as_bytearray()
+        state["baseline"] = parse_csv(file_bytes)
+
+        await msg.reply_text("✅ Baseline CSV uploaded. Now send reported leads text.")
+        return
+
+    # 💬 TEXT = reported (ALWAYS)
+    if msg.text:
+        reported = parse_text(msg.text)
+
+        if not reported:
+            await msg.reply_text("❌ No valid lead data found. Try again.")
+            return
+
+        state["reported"] = reported
+
+        # 🚨 ALWAYS show alerts (no baseline needed)
+        await msg.reply_text(
+            build_lead_count_alert_report(reported),
+            parse_mode="Markdown"
+        )
+
+        # 🧮 ONLY show leakage if baseline exists
+        if state.get("baseline"):
             comparison = compare(state["baseline"], reported)
+
+            await msg.reply_text(
+                build_report(comparison),
+                parse_mode="Markdown"
+            )
+
+            await msg.reply_text(
+                build_leakage_only_report(comparison),
+                parse_mode="Markdown"
+            )
+        else:
+            await msg.reply_text(
+                "ℹ️ No baseline yet. Upload a CSV to enable leakage report."
+            )
             
-            await msg.reply_text(build_report(comparison), parse_mode="Markdown")
-            await msg.reply_text(build_leakage_only_report(comparison), parse_mode="Markdown")
-            await msg.reply_text(build_lead_count_alert_report(reported), parse_mode="Markdown")
-
-            # REMOVED reset_state(user_id) here so commands keep working!
-            await msg.reply_text("✅ Analysis complete. You can use /leakage or /leadsreport to see these again, or /reset to start fresh.")
-
-
 # =========================
 # MAIN 🚀
 # =========================
