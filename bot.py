@@ -46,75 +46,49 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "👋 *Welcome to the Leakage Bot*\n\n"
-        "Step 1️⃣: Upload your baseline CSV 📎\n"
-        "Step 2️⃣: Paste reported leads text 💬\n\n"
-        "Use /sample to see format examples.\n"
-        "Use /reset anytime to restart.",
-        parse_mode="Markdown",
-    )
-
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🆘 *How to use*\n\n"
-        "Upload CSV with workshop + count\n"
-        "Paste reported text\n\n"
-        "Commands:\n"
-        "/start - Restart flow\n"
-        "/reset - Clear session\n"
-        "/sample - Show examples\n",
-        parse_mode="Markdown",
-    )
-
-async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    reset_state(user_id)
-    await update.message.reply_text("🔄 Reset complete. Upload a new CSV to start.")
-
-async def sample(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📄 *Sample Formats*\n\n"
-        "*CSV:*\n"
-        "Campaign name, Leads"
-        "Photography - 6 Apr, 10\n"
-        "Videography - 23 Mar, 5\n\n"
-        "*Text:*\n"
-        "PPE - 8\n"
-        "VVE - 3",
+        "You can upload files in any order:\n"
+        "1️⃣ **CSV Only**: Saves as baseline.\n"
+        "2️⃣ **Text Only**: Shows lead alerts & asks for CSV.\n"
+        "3️⃣ **Both**: Generates full leakage reports.\n\n"
+        "Use /sample for formats or /reset to clear data.",
         parse_mode="Markdown",
     )
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-
-    state = user_state.get(user_id) or {"step": 1, "baseline": {}, "reported": {}}
-    baseline = "✅ Loaded" if state.get("baseline") else "❌ Not set"
-    reported = "✅ Loaded" if state.get("reported") else "❌ Not set"
+    state = user_state.get(user_id) or {"baseline": None, "reported": None}
+    
+    baseline_status = "✅ Loaded" if state.get("baseline") else "❌ Missing"
+    reported_status = "✅ Loaded" if state.get("reported") else "❌ Missing"
 
     await update.message.reply_text(
-    f"📊 *Current Status*\n\n"
-    f"Baseline: {baseline}\n"
-    f"Reported: {reported}",
-    parse_mode="Markdown",
-)
+        f"📊 *Current Session Status*\n\n"
+        f"**Baseline CSV:** {baseline_status}\n"
+        f"**Reported Text:** {reported_status}\n\n"
+        "Ready to generate reports? Just upload the missing piece!",
+        parse_mode="Markdown",
+    )
 
 async def leakage_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manual trigger for leakage reports"""
     user_id = update.effective_user.id
     state = user_state.get(user_id)
 
-    if not state or not state.get("baseline"):
-        await update.message.reply_text("❌ Baseline required for leakage report. Upload a CSV first.")
-        return
-
-    if not state.get("reported"):
-        await update.message.reply_text("❌ No reported data found. Send leads text first.")
+    if not state or not state.get("baseline") or not state.get("reported"):
+        await update.message.reply_text(
+            "⚠️ *Cannot generate leakage reports.*\n"
+            "You need both a **CSV baseline** and **Reported text**.\n"
+            "Use /status to see what is missing.",
+            parse_mode="Markdown"
+        )
         return
 
     comparison = compare(state["baseline"], state["reported"])
-    report = build_leakage_only_report(comparison)
-
-    await update.message.reply_text(report, parse_mode="Markdown")
+    await update.message.reply_text(build_report(comparison), parse_mode="Markdown")
+    await update.message.reply_text(build_leakage_only_report(comparison), parse_mode="Markdown")
 
 async def leads_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manual trigger for lead count alert"""
     user_id = update.effective_user.id
     state = user_state.get(user_id)
 
@@ -296,59 +270,76 @@ def build_lead_count_alert_report(reported_data):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    state = user_state.setdefault(user_id, {
-    "baseline": None,
-    "reported": None
-})
+    # Initialize state if new user
+    if user_id not in user_state:
+        reset_state(user_id)
+    
+    state = user_state[user_id]
     msg = update.message
     if not msg:
         return
 
-
-    # 📎 CASE 1: CSV UPLOAD
-    if msg.document and msg.document.file_name.endswith(".csv"):
+    # ---------------------------------------------------------
+    # 1. IDENTIFY AND PARSE INPUT
+    # ---------------------------------------------------------
+    
+    # Check for CSV Document
+    if msg.document and msg.document.file_name.lower().endswith(".csv"):
         file = await msg.document.get_file()
         file_bytes = await file.download_as_bytearray()
-
         state["baseline"] = parse_csv(file_bytes)
+        # We don't return here because we want to check the decision engine below
 
-        await msg.reply_text("✅ Baseline saved. Now send reported leads text.")
-    
-    # 💬 CASE 2: TEXT INPUT
-    if msg.text:
+    # Check for Text Input (and ensure it's not a command handled elsewhere)
+    elif msg.text and not msg.text.startswith('/'):
         reported = parse_text(msg.text)
-
         if not reported:
-            await msg.reply_text("❌ No valid lead data found. Try again.")
+            await msg.reply_text("❌ No valid lead data found in your text. Please check the format.")
             return
-
         state["reported"] = reported
 
+    # ---------------------------------------------------------
+    # 2. DECISION ENGINE 🧠
+    # ---------------------------------------------------------
     baseline = state.get("baseline")
     reported = state.get("reported")
 
-    # =========================
-    # DECISION ENGINE 🧠
-    # =========================
-    baseline = state.get("baseline")
-    reported = state.get("reported")
-
-    if not baseline and reported:
-        await msg.reply_text(build_lead_count_alert_report(reported))
-        await msg.reply_text("📎 Upload a CSV to generate leakage report.")
-        return
-
+    # Case A: ONLY CSV exists
     if baseline and not reported:
-        await msg.reply_text("📊 Baseline saved. Now paste reported leads text.")
-        return
+        await msg.reply_text(
+            "✅ *Baseline Saved.*\n\n"
+            "Now please paste/send your **reported leads text** to generate the leakage reports.",
+            parse_mode="Markdown"
+        )
 
-    if baseline and reported:
+    # Case B: ONLY Text exists
+    elif reported and not baseline:
+        # Generate the lead count alert report immediately
+        alert_report = build_lead_count_alert_report(reported)
+        await msg.reply_text(alert_report, parse_mode="Markdown")
+        
+        # Prompt for CSV
+        await msg.reply_text(
+            "📎 *Lead data captured.*\n"
+            "Please upload the **baseline CSV** to see the leakage comparison.",
+            parse_mode="Markdown"
+        )
+
+    # Case C: BOTH exist
+    elif baseline and reported:
         comparison = compare(baseline, reported)
-
-        await msg.reply_text(build_lead_count_alert_report(reported))
-        await msg.reply_text(build_report(comparison))
-        await msg.reply_text(build_leakage_only_report(comparison))
-        return
+        
+        # Generate both required reports
+        full_leakage = build_report(comparison)
+        leakage_only = build_leakage_only_report(comparison)
+        
+        await msg.reply_text("📊 *Generating Full Analysis...*", parse_mode="Markdown")
+        await msg.reply_text(full_leakage, parse_mode="Markdown")
+        await msg.reply_text(leakage_only, parse_mode="Markdown")
+        
+        # Optional: Reset or keep state? 
+        # Usually best to keep it until the user clicks /reset 
+        # so they can update one or the other without re-uploading everything.
     
 # =========================
 # MAIN 🚀
