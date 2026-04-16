@@ -184,19 +184,20 @@ def parse_csv(file_bytes):
     campaign_idx = None
     leads_idx = None
 
-    # 🎯 Try to detect columns by name
+    # 🎯 Detection with priority logic
     for i, h in enumerate(headers):
-        if "Campaign name" in h:
+        if "campaign name" == h or h == "campaign":
             campaign_idx = i
-        elif "Leads" in h:
+        if h == "leads":
+            leads_idx = i
+        elif "lead" in h and leads_idx is None:
             leads_idx = i
 
-    # 🚨 If headers not found → fallback to positional logic
-    start_row = 1
-    if campaign_idx is None or leads_idx is None:
-        campaign_idx = 0
-        leads_idx = -1
-        start_row = 0  # no header
+    # 🚨 Fallback if headers not found
+    if campaign_idx is None: campaign_idx = 0
+    if leads_idx is None: leads_idx = -1
+    
+    start_row = 1 # Skip header row
 
     valid_codes = set(WORKSHOP_MAP.values())
 
@@ -204,7 +205,11 @@ def parse_csv(file_bytes):
         if len(row) <= max(campaign_idx, leads_idx):
             continue
 
-        raw_val = normalize(row[campaign_idx]).split("-")[0].split("(")[0].strip()
+        # Clean up campaign name (e.g., "Photography - 6 Apr" -> "PHOTOGRAPHY")
+        raw_name = row[campaign_idx].strip()
+        if not raw_name: continue # Skip empty campaign names (like the "Total" row)
+        
+        raw_val = normalize(raw_name).split("-")[0].split("(")[0].strip()
 
         # Map workshop
         if raw_val in valid_codes:
@@ -217,9 +222,12 @@ def parse_csv(file_bytes):
             continue
 
         try:
-            count = int(row[leads_idx].replace(",", "").strip())
+            # Clean string and convert to float first, then int (handles "1.0" or "5")
+            val_clean = row[leads_idx].replace(",", "").strip()
+            if not val_clean: continue
+            count = int(float(val_clean)) 
             data[workshop] += count
-        except:
+        except (ValueError, TypeError):
             continue
 
     return dict(data)
