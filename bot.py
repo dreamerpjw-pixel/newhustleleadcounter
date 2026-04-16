@@ -186,9 +186,9 @@ def parse_csv(file_bytes):
 
     # 🎯 Try to detect columns by name
     for i, h in enumerate(headers):
-        if "campaign" in h:
+        if "Campaign name" in h:
             campaign_idx = i
-        elif "lead" in h:
+        elif "Leads" in h:
             leads_idx = i
 
     # 🚨 If headers not found → fallback to positional logic
