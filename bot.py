@@ -25,6 +25,11 @@ TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     raise ValueError("BOT_TOKEN is not set")
 
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
+if not WEBHOOK_URL:
+    raise ValueError("WEBHOOK_URL is not set")
+
 # =========================
 # STATE STORAGE 🧠
 # =========================
@@ -45,7 +50,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_state(user_id)
 
     await update.message.reply_text(
-        "👋 *Welcome to the Leakage Bot (Polling Mode)*\n\n"
+        "👋 *Welcome to the Leakage Bot*\n\n"
         "Step 1️⃣: Upload your baseline CSV 📎\n"
         "Step 2️⃣: Paste reported leads text 💬\n\n"
         "Use /sample to see format examples.\n"
@@ -305,37 +310,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # REMOVED reset_state(user_id) here so commands keep working!
             await msg.reply_text("✅ Analysis complete. You can use /leakage or /leadsreport to see these again, or /reset to start fresh.")
 
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is active")
-    
-    # Silence the logs so they don't clutter your terminal
-    def log_message(self, format, *args):
-        return
-
-def run_health_check():
-    # Retrieve the PORT from the environment (default 10000)
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    print(f"📡 Heartbeat server started on port {port}")
-    server.serve_forever()
-
 
 # =========================
 # MAIN 🚀
 # =========================
 if __name__ == "__main__":
-    # 1. Start the Heartbeat for the hosting provider
-    threading.Thread(target=run_health_check, daemon=True).start()
-    
-    print("🤖 Bot is starting via Polling...")
-    
-    # 2. Build the Application
+    print("🤖 Bot is starting via Webhook...")
+
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # 3. Add all your Handlers
+    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("reset", reset))
@@ -344,8 +328,16 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("leakage", leakage_report_cmd))
     app.add_handler(CommandHandler("leadsreport", leads_report_cmd))
 
-    # General Messages (CSV and Text input)
-    app.add_handler(MessageHandler((filters.TEXT | filters.Document.ALL) & ~filters.COMMAND, handle_message))
+    app.add_handler(
+        MessageHandler(
+            (filters.TEXT | filters.Document.ALL) & ~filters.COMMAND,
+            handle_message
+        )
+    )
 
-    # 4. Start Polling
-    app.run_polling()
+    # Webhook start
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 10000)),
+        webhook_url=WEBHOOK_URL,
+    )
