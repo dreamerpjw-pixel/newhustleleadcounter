@@ -33,7 +33,6 @@ user_state = {}
 
 def reset_state(user_id):
     user_state[user_id] = {
-        "step": 1,
         "baseline": {},
         "reported": {}
     }
@@ -291,26 +290,28 @@ def build_lead_count_alert_report(reported_data):
 
     return "\n".join(lines)
 
+# =========================
+# HANDLERS
+# =========================
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id not in user_state:
-        reset_state(user_id)
-
-    state = user_state[user_id]
+    state = user_state.setdefault(user_id, {"baseline": {}, "reported": {}})
     msg = update.message
     if not msg:
         return
 
-    # 📎 CSV = baseline
-    if msg.document and msg.document.file_name.endswith('.csv'):
+
+    # 📎 CASE 1: CSV UPLOAD
+    if msg.document and msg.document.file_name.endswith(".csv"):
         file = await msg.document.get_file()
         file_bytes = await file.download_as_bytearray()
+
         state["baseline"] = parse_csv(file_bytes)
 
-        await msg.reply_text("✅ Baseline CSV uploaded. Now send reported leads text.")
-        return
-
-    # 💬 TEXT = reported (ALWAYS)
+        await msg.reply_text("✅ Baseline saved. Now send reported leads text.")
+    
+    # 💬 CASE 2: TEXT INPUT
     if msg.text:
         reported = parse_text(msg.text)
 
@@ -320,30 +321,52 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         state["reported"] = reported
 
-        # 🚨 ALWAYS show alerts (no baseline needed)
+    baseline = state.get("baseline")
+    reported = state.get("reported")
+
+    # =========================
+    # DECISION ENGINE 🧠
+    # =========================
+
+    # CASE B: TEXT ONLY (no baseline yet)
+    if reported and not baseline:
         await msg.reply_text(
             build_lead_count_alert_report(reported),
             parse_mode="Markdown"
         )
 
-        # 🧮 ONLY show leakage if baseline exists
-        if state.get("baseline"):
-            comparison = compare(state["baseline"], reported)
+        await msg.reply_text(
+            "📎 Upload a CSV to generate leakage report.",
+        )
+        return
 
-            await msg.reply_text(
-                build_report(comparison),
-                parse_mode="Markdown"
-            )
+    # CASE A: CSV ONLY (no text yet)
+    if baseline and not reported:
+        await msg.reply_text(
+            "📊 Baseline saved. Now paste reported leads text.",
+        )
+        return
 
-            await msg.reply_text(
-                build_leakage_only_report(comparison),
-                parse_mode="Markdown"
-            )
-        else:
-            await msg.reply_text(
-                "ℹ️ No baseline yet. Upload a CSV to enable leakage report."
-            )
-            
+    # CASE C: BOTH PRESENT → FULL ENGINE
+    if baseline and reported:
+        comparison = compare(baseline, reported)
+
+        await msg.reply_text(
+            build_lead_count_alert_report(reported),
+            parse_mode="Markdown"
+        )
+
+        await msg.reply_text(
+            build_report(comparison),
+            parse_mode="Markdown"
+        )
+
+        await msg.reply_text(
+            build_leakage_only_report(comparison),
+            parse_mode="Markdown"
+        )
+
+        return
 # =========================
 # MAIN 🚀
 # =========================
