@@ -298,10 +298,8 @@ def build_lead_count_alert_report(reported_data):
 # =========================
 # HANDLERS
 # =========================
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    # Initialize state if new user
     if user_id not in user_state:
         reset_state(user_id)
     
@@ -310,67 +308,57 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg:
         return
 
-    # ---------------------------------------------------------
     # 1. IDENTIFY AND PARSE INPUT
-    # ---------------------------------------------------------
-    
+    data_received = False
+
     # Check for CSV Document
     if msg.document and msg.document.file_name.lower().endswith(".csv"):
-        file = await msg.document.get_file()
-        file_bytes = await file.download_as_bytearray()
-        state["baseline"] = parse_csv(file_bytes)
-        # We don't return here because we want to check the decision engine below
+        try:
+            file = await msg.document.get_file()
+            file_bytes = await file.download_as_bytearray()
+            parsed_data = parse_csv(file_bytes)
+            
+            if parsed_data:
+                state["baseline"] = parsed_data
+                data_received = True
+                await msg.reply_text(f"✅ *CSV Baseline Received!* ({len(parsed_data)} campaigns loaded)", parse_mode="Markdown")
+            else:
+                await msg.reply_text("❌ CSV was empty or format was unrecognized. Check /sample.")
+                return
+        except Exception as e:
+            await msg.reply_text(f"❌ Error processing CSV: {str(e)}")
+            return
 
-    # Check for Text Input (and ensure it's not a command handled elsewhere)
+    # Check for Text Input (if no document was processed)
     elif msg.text and not msg.text.startswith('/'):
         reported = parse_text(msg.text)
-        if not reported:
-            await msg.reply_text("❌ No valid lead data found in your text. Please check the format.")
+        if reported:
+            state["reported"] = reported
+            data_received = True
+            await msg.reply_text("✅ *Text Lead Data Received!*", parse_mode="Markdown")
+        else:
+            await msg.reply_text("❌ No valid lead data found in your text. Please check /sample.")
             return
-        state["reported"] = reported
 
-    # ---------------------------------------------------------
-    # 2. DECISION ENGINE 🧠
-    # ---------------------------------------------------------
-    baseline = state.get("baseline")
-    reported = state.get("reported")
+    # 2. DECISION ENGINE (Only trigger if we just received data)
+    if data_received:
+        baseline = state.get("baseline")
+        reported = state.get("reported")
 
-    # Case A: ONLY CSV exists
-    if baseline and not reported:
-        await msg.reply_text(
-            "✅ *Baseline Saved.*\n\n"
-            "Now please paste/send your **reported leads text** to generate the leakage reports.",
-            parse_mode="Markdown"
-        )
+        if baseline and not reported:
+            await msg.reply_text("👉 Now, please paste your **reported leads text**.")
 
-    # Case B: ONLY Text exists
-    elif reported and not baseline:
-        # Generate the lead count alert report immediately
-        alert_report = build_lead_count_alert_report(reported)
-        await msg.reply_text(alert_report, parse_mode="Markdown")
-        
-        # Prompt for CSV
-        await msg.reply_text(
-            "📎 *Lead data captured.*\n"
-            "Please upload the **baseline CSV** to see the leakage comparison.",
-            parse_mode="Markdown"
-        )
+        elif reported and not baseline:
+            # Show the immediate alert report
+            alert_report = build_lead_count_alert_report(reported)
+            await msg.reply_text(alert_report, parse_mode="Markdown")
+            await msg.reply_text("👉 Now, please upload your **baseline CSV**.")
 
-    # Case C: BOTH exist
-    elif baseline and reported:
-        comparison = compare(baseline, reported)
-        
-        # Generate both required reports
-        full_leakage = build_report(comparison)
-        leakage_only = build_leakage_only_report(comparison)
-        
-        await msg.reply_text("📊 *Generating Full Analysis...*", parse_mode="Markdown")
-        await msg.reply_text(full_leakage, parse_mode="Markdown")
-        await msg.reply_text(leakage_only, parse_mode="Markdown")
-        
-        # Optional: Reset or keep state? 
-        # Usually best to keep it until the user clicks /reset 
-        # so they can update one or the other without re-uploading everything.
+        elif baseline and reported:
+            comparison = compare(baseline, reported)
+            await msg.reply_text("📊 *Generating Full Analysis...*", parse_mode="Markdown")
+            await msg.reply_text(build_report(comparison), parse_mode="Markdown")
+            await msg.reply_text(build_leakage_only_report(comparison), parse_mode="Markdown")
     
 # =========================
 # MAIN 🚀
