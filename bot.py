@@ -40,6 +40,7 @@ def reset_state(user_id):
 # =========================
 # COMMANDS 🎮
 # =========================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     reset_state(user_id)
@@ -47,12 +48,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 *Welcome to the Leakage Bot*\n\n"
         "You can upload files in any order:\n"
-        "1️⃣ **CSV Only**: Saves as baseline.\n"
-        "2️⃣ **Text Only**: Shows lead alerts & asks for CSV.\n"
-        "3️⃣ **Both**: Generates full leakage reports.\n\n"
-        "Use /sample for formats or /reset to clear data.",
+        "• **Upload CSV**: Saves as baseline.\n"
+        "• **Paste Text**: Shows lead alerts & prompts for CSV.\n"
+        "• **Both**: Generates full leakage & leakage-only reports.\n\n"
+        "Use /help for more details or /reset to start over.",
         parse_mode="Markdown",
     )
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Explains how the logic works and lists commands"""
+    help_text = (
+        "🆘 *How to use this Bot*\n\n"
+        "**1. Baseline Only (CSV)**\n"
+        "Upload a `.csv` file. The bot will store these counts as your 'source of truth'.\n\n"
+        "**2. Alerts Only (Text)**\n"
+        "Paste your leads text. The bot will immediately show **Zero Leads** and **Low Leads** alerts, then ask for a CSV.\n\n"
+        "**3. Full Analysis (Both)**\n"
+        "Once the bot has both, it automatically generates the comparison reports.\n\n"
+        "**Commands:**\n"
+        "/start - Restart the bot\n"
+        "/status - Check what files are currently uploaded\n"
+        "/sample - See CSV and Text formatting examples\n"
+        "/reset - Wipe current data and start fresh\n"
+        "/leakage - Manually trigger comparison (requires both files)"
+    )
+    await update.message.reply_text(help_text, parse_mode="Markdown")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -69,18 +89,30 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
 
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    reset_state(user_id)
+    await update.message.reply_text("🔄 *Session Reset.* All uploaded data has been cleared.", parse_mode="Markdown")
+
+async def sample(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📄 *Sample Formats*\n\n"
+        "*CSV Format:*\n"
+        "Campaign name, Leads\n"
+        "Photography - 6 Apr, 10\n"
+        "Videography - 23 Mar, 5\n\n"
+        "*Text Format:*\n"
+        "PPE - 8\n"
+        "VVE - 3",
+        parse_mode="Markdown",
+    )
+
 async def leakage_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manual trigger for leakage reports"""
     user_id = update.effective_user.id
     state = user_state.get(user_id)
 
     if not state or not state.get("baseline") or not state.get("reported"):
-        await update.message.reply_text(
-            "⚠️ *Cannot generate leakage reports.*\n"
-            "You need both a **CSV baseline** and **Reported text**.\n"
-            "Use /status to see what is missing.",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("⚠️ *Error:* You need both CSV and Text data for this.")
         return
 
     comparison = compare(state["baseline"], state["reported"])
@@ -88,12 +120,11 @@ async def leakage_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(build_leakage_only_report(comparison), parse_mode="Markdown")
 
 async def leads_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manual trigger for lead count alert"""
     user_id = update.effective_user.id
     state = user_state.get(user_id)
 
     if not state or not state.get("reported"):
-        await update.message.reply_text("❌ No reported leads found. Please paste your leads text first.")
+        await update.message.reply_text("❌ No reported leads found.")
         return
 
     report = build_lead_count_alert_report(state["reported"])
